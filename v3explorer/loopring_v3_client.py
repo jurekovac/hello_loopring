@@ -22,7 +22,7 @@ from ethsnarks.poseidon import poseidon_params, poseidon
 from v3explorer.ecdsa_utils import *
 from v3explorer.eddsa_utils import *
 
-LOOPRING_REST_HOST = "https://uat2.loopring.io"
+LOOPRING_REST_HOST = "https://api3.loopring.io"
 
 class Security(Flag):
     NONE        = 0

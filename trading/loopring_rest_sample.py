@@ -31,7 +31,7 @@ class LoopringRestApiSample(RestClient):
     LOOPRING REST API SAMPLE
     """
 
-    LOOPRING_REST_HOST   = "https://api.loopring.io"
+    LOOPRING_REST_HOST   = "https://api3.loopring.io"
     MAX_ORDER_ID = 1_000_000
 
     market_info_map = {
