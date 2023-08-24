@@ -1,14 +1,16 @@
-from ethsnarks.eddsa import PureEdDSA, PoseidonEdDSA
-from ethsnarks.field import FQ, SNARK_SCALAR_FIELD
-from ethsnarks.poseidon import poseidon_params, poseidon
-from ethsnarks.eddsa import Signature, SignedMessage
+from sdk.ethsnarks.eddsa import PureEdDSA, PoseidonEdDSA
+from sdk.ethsnarks.field import FQ, SNARK_SCALAR_FIELD
+from sdk.ethsnarks.poseidon import poseidon_params, poseidon
+from sdk.ethsnarks.eddsa import Signature, SignedMessage
 import urllib
 import hashlib
+import json
 
 class EddsaSignHelper:
-    def __init__(self, poseidon_params, private_key):
+    def __init__(self, poseidon_params, private_key = "0x1"):
         self.poseidon_sign_param = poseidon_params
-        self.private_key = private_key
+        self.private_key = FQ(int(private_key, 16))
+        assert self.private_key != FQ.zero()
         # print(f"self.private_key = {self.private_key}")
 
     def hash(self, structure_data):
@@ -18,7 +20,8 @@ class EddsaSignHelper:
 
     def sign(self, structure_data):
         msgHash = self.hash(structure_data)
-        signedMessage = PoseidonEdDSA.sign(msgHash, FQ(int(self.private_key, 16)))
+        signedMessage = PoseidonEdDSA.sign(msgHash, self.private_key)
+        # print("sign=", signedMessage)
         return "0x" + "".join([
                         hex(int(signedMessage.sig.R.x))[2:].zfill(64),
                         hex(int(signedMessage.sig.R.y))[2:].zfill(64),
@@ -67,13 +70,21 @@ class UrlEddsaSignHelper(EddsaSignHelper):
         hasher = hashlib.sha256()
         hasher.update(serialized_data.encode('utf-8'))
         msgHash = int(hasher.hexdigest(), 16) % SNARK_SCALAR_FIELD
+        # print(f"serialized_data = {serialized_data}, prehash = {hasher.hexdigest()}, msgHash = {hex(msgHash)}")
         return msgHash
 
     def serialize_data(self, request):
         method = request.method
         url = urllib.parse.quote(self.host + request.path, safe='')
-        data = urllib.parse.quote("&".join([f"{k}={urllib.parse.quote(str(v), safe='')}" for k, v in request.params.items()]), safe='')
+        if method in ["GET", "DELETE"]:
+            data = urllib.parse.quote("&".join([f"{k}={urllib.parse.quote(str(v), safe='')}" for k, v in request.params.items()]), safe='')
+        elif method in ["POST", "PUT"]:
+            data = urllib.parse.quote(json.dumps(request.data, separators=(',', ':')), safe='')
+        else:
+            raise Exception(f"Unknown request method {method}")
+
         # return "&".join([method, url.replace("http", "https"), data])
+        # print("&".join([method, url, data]))
         return "&".join([method, url, data])
 
 class OrderEddsaSignHelper(EddsaSignHelper):
