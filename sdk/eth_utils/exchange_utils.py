@@ -24,7 +24,7 @@ class EthExchangeWrapper:
         else:
             self.w3 = web3
             self.network = "mainnet"
-        self.address = Web3.toChecksumAddress(address)
+        self.address = Web3.to_checksum_address(address)
         self.private_key = private_key
 
         # This code automatically approves you for trading on the exchange.
@@ -51,7 +51,7 @@ class EthExchangeWrapper:
         # token address
 
         self.exchange_contract = self.w3.eth.contract(
-            address=Web3.toChecksumAddress(exchange_address), abi=exchange_abi
+            address=Web3.to_checksum_address(exchange_address), abi=exchange_abi
         )
         self.deposit_contract = self.getDepositContract()
 
@@ -59,7 +59,7 @@ class EthExchangeWrapper:
         for token_name, token_address in token_addresses.items():
             if token_address != self.eth_address:
                 self.erc20_contract[token_name] = self.w3.eth.contract(
-                    address= Web3.toChecksumAddress(token_address), abi=erc20_abi
+                    address= Web3.to_checksum_address(token_address), abi=erc20_abi
                 )
 
     def getDomainSeparator(self):
@@ -124,7 +124,7 @@ class EthExchangeWrapper:
             self.deposit_contract, max_approval
         )
         tx = self._build_and_send_tx(function, tx_params)
-        self.w3.eth.waitForTransactionReceipt(tx, timeout=6000)
+        self.w3.eth.wait_for_transaction_receipt(tx, timeout=6000)
         # Add extra sleep to let tx propogate correctly
         time.sleep(1)
 
@@ -150,7 +150,7 @@ class EthExchangeWrapper:
         signed_txn = self.w3.eth.account.signTransaction(
             transaction, private_key=self.private_key
         )
-        return self.w3.eth.sendRawTransaction(signed_txn.rawTransaction)
+        return self.w3.eth.send_raw_transaction(signed_txn.rawTransaction)
 
     def _get_tx_params(self, value=0, gas=150000):
         """Get generic transaction parameters."""
@@ -158,5 +158,5 @@ class EthExchangeWrapper:
             "from": self.address,
             "value": value,
             "gas": gas,
-            "nonce": self.w3.eth.getTransactionCount(self.address),
+            "nonce": self.w3.eth.get_transaction_count(self.address),
         }
