@@ -17,8 +17,8 @@ Other implementations:
 from math import log2, floor
 from collections import namedtuple
 
-""" pyblake2 is deprecated used hashlib """
-# from pyblake2 import blake2b 
+""" pyblake2 is deprecated: use blake2b from hashlib """
+# from pyblake2 import blake2b
 from hashlib import blake2b
 from ..field import SNARK_SCALAR_FIELD
 

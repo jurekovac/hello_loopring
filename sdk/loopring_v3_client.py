@@ -15,20 +15,21 @@ from time import time, sleep
 import urllib
 from web3 import Web3
 
-from trading.rest_client import RestClient, Request
-from ethsnarks.eddsa import PureEdDSA, PoseidonEdDSA
-from ethsnarks.field import FQ, SNARK_SCALAR_FIELD
-from ethsnarks.poseidon import poseidon_params, poseidon
-from v3explorer.ecdsa_utils import *
-from v3explorer.eddsa_utils import *
+from sdk.request_utils.rest_client import RestClient
+from sdk.ethsnarks.eddsa import PureEdDSA, PoseidonEdDSA
+from sdk.ethsnarks.field import FQ, SNARK_SCALAR_FIELD
+from sdk.ethsnarks.poseidon import poseidon_params, poseidon
+from sdk.sig_utils.ecdsa_utils import *
+from sdk.sig_utils.eddsa_utils import *
 
-LOOPRING_REST_HOST = "https://api3.loopring.io"
+LOOPRING_REST_HOST = "https://api.uat.loopring.pro"
 
 class Security(Flag):
-    NONE        = 0
-    EDDSA_SIGN  = 1
-    API_KEY     = 2
-    ECDSA_AUTH  = 4
+    NONE            = 0
+    EDDSA_URL_SIGN  = 1
+    API_KEY         = 2
+    ECDSA_EIP_AUTH  = 4
+    ECDSA_URL_SIGN  = 8
 
 class SignatureType(Enum):
     ECDSA           = 0
@@ -41,12 +42,23 @@ class EthSignType:
     EIP_712     = "02"
     ETH_SIGN    = "03"
 
-class LoopringV3AmmSampleClient(RestClient):
+class OffchainRequestType(Enum):
+    ORDER                    = 0
+    OFFCHAIN_WITHDRAWAL      = 1
+    UPDATE_ACCOUNT           = 2
+    TRANSFER                 = 3
+    FAST_OFFCHAIN_WITHDRAWAL = 4
+    OPEN_ACCOUNT             = 5
+    AMM_EXIT                 = 6
+    DEPOSIT                  = 7
+    AMM_JOIN                 = 8
+
+
+class LoopringV3Client(RestClient):
     """
     LOOPRING REST API SAMPLE
     """
 
-    LOOPRING_REST_HOST = LOOPRING_REST_HOST
     MAX_ORDER_ID = 1<<32
 
     def __init__(self):
@@ -61,8 +73,8 @@ class LoopringV3AmmSampleClient(RestClient):
 
         # self.web3 = Web3(Web3.HTTPProvider(eth_addr))
         # order related
-        self.orderId     = [0] * 256
-        self.offchainId     = [0] * 256
+        self.orderId     = [0] * 65536
+        self.offchainId     = [0] * 65536
         self.time_offset = 0
         self.nonce      = 0
 
@@ -72,22 +84,23 @@ class LoopringV3AmmSampleClient(RestClient):
         self.tokenNames = {}
         self.tokenDecimals = {}
 
-        self.init(self.LOOPRING_REST_HOST)
+        self.init(LOOPRING_REST_HOST)
         self.start()
 
-    def connect(self, exported_secret : dict):
+    def connect(self, account_settings : dict):
         """
         Initialize connection to LOOPRING REST server.
         """
-        self.accountId  = exported_secret['accountId']
-        self.address    = exported_secret['address']
-        self.api_key    = exported_secret['apiKey']
-        self.exchange   = exported_secret['exchange']
-        self.ecdsaKey   = int(exported_secret['ecdsaKey'], 16).to_bytes(32, byteorder='big')
-        self.eddsaKey   = exported_secret['eddsaKey']
-        self.publicKeyX = exported_secret["publicKeyX"]
-        self.publicKeyY = exported_secret["publicKeyY"]
-        self.chainId    = exported_secret["chainId"]
+        self.accountId  = account_settings['accountId']
+        self.address    = account_settings['accountAddress']
+        self.api_key    = account_settings['apiKey']
+        self.exchange   = account_settings['exchangeAddress']
+        self.ecdsaKey   = int(account_settings['ecdsaKey'], 16).to_bytes(32, byteorder='big')
+        self.eddsaKey   = account_settings['privateKey']
+        self.publicKeyX = account_settings["publicKeyX"]
+        self.publicKeyY = account_settings["publicKeyY"]
+        self.chainId    = account_settings["chainId"]
+        self.whitelisted = account_settings["whitelisted"]
 
         self.next_eddsaKey = None
 
@@ -102,7 +115,7 @@ class LoopringV3AmmSampleClient(RestClient):
         EIP712.init_env(name="Loopring Protocol",
                         version="3.6.0",
                         chainId=self.chainId,
-                        verifyingContract=exported_secret['exchange'])
+                        verifyingContract=self.exchange)
         sleep(7)
 
     def sign(self, request):
@@ -132,13 +145,20 @@ class LoopringV3AmmSampleClient(RestClient):
         if request.headers != None:
             headers.update(request.headers)
 
-        if security & Security.EDDSA_SIGN:
+        if security & Security.EDDSA_URL_SIGN:
             signer = UrlEddsaSignHelper(self.eddsaKey, LOOPRING_REST_HOST)
             signature = signer.sign(request)
             headers.update({"X-API-SIG": signature})
-        elif security & Security.ECDSA_AUTH:
-            headers.update({"X-API-SIG": request.data["X-API-SIG"]})
+        elif security & Security.ECDSA_EIP_AUTH:
+            # headers.update({"X-API-SIG": request.data["X-API-SIG"]})
+            assert "X-API-SIG" in headers
             pass
+        elif security & Security.ECDSA_URL_SIGN:
+            signer = UrlEddsaSignHelper(self.eddsaKey, LOOPRING_REST_HOST)
+            message = signer.hash(request)
+            v, r, s = sig_utils.ecsign(message, self.ecdsaKey)
+            ecdsaSig =  "0x" + bytes.hex(v_r_s_to_signature(v, r, s)) + EthSignType.EIP_712
+            headers.update({"X-API-SIG": signature})
 
         request.path = path
         if request.method not in ["GET", "DELETE"]:
@@ -387,7 +407,7 @@ class LoopringV3AmmSampleClient(RestClient):
     def get_apiKey(self):
         """"""
         data = {
-            "security": Security.EDDSA_SIGN
+            "security": Security.EDDSA_URL_SIGN
         }
 
         self.add_request(
@@ -401,7 +421,7 @@ class LoopringV3AmmSampleClient(RestClient):
         )
 
     def on_get_apiKey(self, data, request):
-        # print(f"on_get_apiKey get response: {data}")
+        print(f"on_get_apiKey get response: {data}")
         self.api_key = data["apiKey"]
         self.query_balance()
 
@@ -474,15 +494,15 @@ class LoopringV3AmmSampleClient(RestClient):
             'nonce': self.nonce
         }
         updateAccountReq = self._create_update_request(req)
-        data = {"security": Security.ECDSA_AUTH}
+        data = {"security": Security.ECDSA_EIP_AUTH}
         data.update(updateAccountReq)
 
-        message = createUpdateAccountMessage(updateAccountReq)
+        message = generateUpdateAccountEIP712Hash(updateAccountReq)
         # print(f"message hash = {bytes.hex(message)}")
         v, r, s = sig_utils.ecsign(message, self.ecdsaKey)
-        data['X-API-SIG'] = "0x" + bytes.hex(v_r_s_to_signature(v, r, s)) + EthSignType.EIP_712
-        data['ecdsaSignature'] = data['X-API-SIG']
-        # print(f"data = {data}")
+        ecdsaSig =  "0x" + bytes.hex(v_r_s_to_signature(v, r, s)) + EthSignType.EIP_712
+        headers = {'X-API-SIG': ecdsaSig}
+        data['ecdsaSignature'] = ecdsaSig
 
         self.add_request(
             method="POST",
@@ -490,7 +510,8 @@ class LoopringV3AmmSampleClient(RestClient):
             callback=self.on_update_account,
             params=updateAccountReq,
             data=data,
-            extra=updateAccountReq
+            extra=updateAccountReq,
+            headers=headers
         )
 
     def update_account_eddsa(self, privateKey, publicKey, approved=False):
@@ -511,12 +532,16 @@ class LoopringV3AmmSampleClient(RestClient):
         }
         updateAccountReq = self._create_update_request(req)
         # print(f"create new order {order}")
-        data = {"security": Security.ECDSA_AUTH}
+        data = {"security": Security.API_KEY}
         data.update(updateAccountReq)
 
-        message = createUpdateAccountMessage(updateAccountReq)
-        v, r, s = sig_utils.ecsign(message, self.ecdsaKey)
-        data['X-API-SIG'] = "0x" + bytes.hex(v_r_s_to_signature(v, r, s)) + EthSignType.EIP_712
+        if not self.whitelisted:
+            data.update({"security": Security.ECDSA_EIP_AUTH})
+            message = generateUpdateAccountEIP712Hash(updateAccountReq)
+            v, r, s = sig_utils.ecsign(message, self.ecdsaKey)
+            headers = {'X-API-SIG': "0x" + bytes.hex(v_r_s_to_signature(v, r, s)) + EthSignType.ETH_SIGN}
+        else:
+            headers = {}
 
         if not approved:
             signer = UpdateAccountEddsaSignHelper(self.eddsaKey)
@@ -530,7 +555,8 @@ class LoopringV3AmmSampleClient(RestClient):
             callback=self.on_update_account,
             params=updateAccountReq,
             data=data,
-            extra=updateAccountReq
+            extra=updateAccountReq,
+            headers=headers
         )
 
     def _create_update_request(self, req):
@@ -559,15 +585,18 @@ class LoopringV3AmmSampleClient(RestClient):
         """"""
         req = self._create_transfer_request(to_b, token, amount)
         # print(f"create new order {order}")
-        data = {"security": Security.ECDSA_AUTH}
+        data = {"security": Security.ECDSA_EIP_AUTH}
 
         data.update(req)
 
-        message = createOriginTransferMessage(req)
+        message = generateTransferEIP712Hash(req)
         # print(f"transfer message hash = {bytes.hex(message)}")
         v, r, s = sig_utils.ecsign(message, self.ecdsaKey)
-        data['X-API-SIG'] = "0x" + bytes.hex(v_r_s_to_signature(v, r, s)) + EthSignType.EIP_712
-        data['ecdsaSignature'] = data['X-API-SIG']
+        ecdsaSig = "0x" + bytes.hex(v_r_s_to_signature(v, r, s)) + EthSignType.EIP_712
+        headers = {}
+        if not self.whitelisted:
+            headers = {'X-API-SIG': ecdsaSig}
+        data['ecdsaSignature'] = ecdsaSig
 
         # print(f"data = {data}")
         self.add_request(
@@ -576,25 +605,57 @@ class LoopringV3AmmSampleClient(RestClient):
             callback=self.on_transfer,
             params=req,
             data=data,
-            extra=req
+            extra=req,
+            headers=headers
         )
 
-    def transfer_eddsa(self, to_b, token, amount, validUntil=None, storageId=None, approved=False):
+    def getOffChainRequestFees(self, token, requestType):
+        response = self.request(
+            method="GET",
+            path="/api/v3/user/offchainFee",
+            headers={"X-API-KEY": self.api_key},
+            params={
+                "accountId": self.accountId,
+                "requestType": requestType,
+                "tokenSymbol": token
+            },
+            data = {
+                "security": Security.NONE
+            }
+        )
+        try:
+            assert response.status_code in [200, 201]
+            transferFeesResponse = response.json()
+        except Exception as e:
+            print(f"getOffChainRequestFees failed response is {response.text}, error is {e}")
+            raise e
+        return transferFeesResponse["fees"][0]["token"], int(transferFeesResponse["fees"][0]["fee"])
+
+    def transfer_eddsa(self, to_b, token, amount, validUntil=None, storageId=None):
         """"""
-        req = self._create_transfer_request(to_b, token, amount, validUntil, storageId)
-        # print(f"create new req {req}")
-        data = {"security": Security.ECDSA_AUTH}
+        feeToken, feeAmount = self.getOffChainRequestFees(token, OffchainRequestType.TRANSFER.value)
+
+        req = self._create_transfer_request(to_b, token, amount, feeToken, feeAmount, validUntil, storageId)
+        print(f"create new req {req}")
+        data = {"security": Security.API_KEY}
         data.update(req)
 
         signer = OriginTransferEddsaSignHelper(self.eddsaKey)
         signedMessage = signer.sign(req)
-        if not approved:
-            data.update({"eddsaSignature": signedMessage})
+        data.update({"eddsaSignature": signedMessage})
 
-        message = createOriginTransferMessage(req)
+        message = generateTransferEIP712Hash(req)
         # print(f"transfer message hash = {bytes.hex(message)}")
         v, r, s = sig_utils.ecsign(message, self.ecdsaKey)
-        data['X-API-SIG'] = "0x" + bytes.hex(v_r_s_to_signature(v, r, s)) + EthSignType.EIP_712
+        headers = {}
+        if not self.whitelisted:
+            # will put into header, need L1 sig verification
+            data.update({"security": Security.ECDSA_EIP_AUTH})
+            headers = {'X-API-SIG': "0x" + bytes.hex(v_r_s_to_signature(v, r, s)) + EthSignType.EIP_712}
+            data['X-API-SIG'] = "0x" + bytes.hex(v_r_s_to_signature(v, r, s)) + EthSignType.EIP_712
+        else:
+            data.update({"security": Security.API_KEY})
+            headers = {}
 
         self.add_request(
             method="POST",
@@ -602,13 +663,15 @@ class LoopringV3AmmSampleClient(RestClient):
             callback=self.on_transfer,
             params=req,
             data=data,
-            extra=req
+            extra=req,
+            headers=headers
         )
 
-    def _create_transfer_request(self, to_b, token, amount, validUntil = None, storageId = None):
+    def _create_transfer_request(self, to_b, token, amount, feeToken, feeAmount, validUntil = None, storageId = None):
         """"""
         tokenId = self.tokenIds[token]
         decimalUnit = 10**self.tokenDecimals[tokenId]
+        feeTokenId = self.tokenIds[feeToken]
         if storageId is None:
             storageId = self.offchainId[tokenId]
             self.offchainId[tokenId] += 2
@@ -624,8 +687,8 @@ class LoopringV3AmmSampleClient(RestClient):
                 "volume": str(int(amount*decimalUnit))
             },
             "maxFee" : {
-                "tokenId": tokenId,
-                "volume": str(int(amount*decimalUnit/1000))
+                "tokenId": feeTokenId,
+                "volume": str(feeAmount)
             },
             "storageId": storageId,
             "validUntil": int(time()) + 60 * 60 * 24 * 60 if validUntil is None else validUntil,
@@ -638,16 +701,19 @@ class LoopringV3AmmSampleClient(RestClient):
 
     def offchainWithdraw_ecdsa(self, to_b, token, amount, minGas):
         """"""
-        data = {"security": Security.ECDSA_AUTH}
-        req = self._create_offchain_withdraw_request(to_b, token, amount, minGas, bytes(0))
+        feeToken, feeAmount = self.getOffChainRequestFees(token, OffchainRequestType.OFFCHAIN_WITHDRAWAL)
+
+        data = {"security": Security.ECDSA_EIP_AUTH}
+        req = self._create_offchain_withdraw_request(to_b, token, amount, feeToken, feeAmount, minGas, bytes(0))
         # print(f"create new order {order}")
         data.update(req)
 
-        message = createOffchainWithdrawalMessage(req)
+        message = generateOffchainWithdrawalEIP712Hash(req)
         # print(f"withdraw message hash = {bytes.hex(message)}")
         v, r, s = sig_utils.ecsign(message, self.ecdsaKey)
-        data['X-API-SIG'] = "0x" + bytes.hex(v_r_s_to_signature(v, r, s)) + EthSignType.EIP_712
-        data['ecdsaSignature'] = data['X-API-SIG']
+        ecdsaSig = "0x" + bytes.hex(v_r_s_to_signature(v, r, s)) + EthSignType.EIP_712
+        headers = {'X-API-SIG': ecdsaSig}
+        data['ecdsaSignature'] = ecdsaSig
 
         self.add_request(
             method="POST",
@@ -655,14 +721,18 @@ class LoopringV3AmmSampleClient(RestClient):
             callback=self.on_withdraw,
             params=req,
             data=data,
-            extra=req
+            extra=req,
+            headers=headers
         )
 
     def offchainWithdraw_eddsa(self, to_b, token, amount, minGas,
                                 extraData=bytes(0), validUntil=None, storageId=None):
         """"""
-        data = {"security": Security.ECDSA_AUTH}
-        req = self._create_offchain_withdraw_request(to_b, token, amount, minGas, extraData, validUntil, storageId)
+        feeToken, feeAmount = self.getOffChainRequestFees(token, OffchainRequestType.OFFCHAIN_WITHDRAWAL.value)
+
+        data = {"security": Security.ECDSA_EIP_AUTH}
+        req = self._create_offchain_withdraw_request(to_b, token, amount, feeToken, feeAmount, minGas, extraData, validUntil, storageId)
+        print(f"create new req {req}")
         data.update(req)
 
         signer = WithdrawalEddsaSignHelper(self.eddsaKey)
@@ -670,10 +740,10 @@ class LoopringV3AmmSampleClient(RestClient):
         signedMessage = signer.sign(req)
         data.update({"eddsaSignature": signedMessage})
 
-        message = createOffchainWithdrawalMessage(req)
+        message = generateOffchainWithdrawalEIP712Hash(req)
         # print(f"withdraw message hash = {bytes.hex(message)}")
         v, r, s = sig_utils.ecsign(message, self.ecdsaKey)
-        data['X-API-SIG'] = "0x" + bytes.hex(v_r_s_to_signature(v, r, s)) + EthSignType.EIP_712
+        headers = {'X-API-SIG': "0x" + bytes.hex(v_r_s_to_signature(v, r, s)) + EthSignType.EIP_712}
 
         self.add_request(
             method="POST",
@@ -681,13 +751,16 @@ class LoopringV3AmmSampleClient(RestClient):
             callback=self.on_withdraw,
             params=req,
             data=data,
-            extra=req
+            extra=req,
+            headers=headers
         )
 
-    def _create_offchain_withdraw_request(self, to: str, token, amount: float, minGas: int,
+    def _create_offchain_withdraw_request(self, to: str, token, amount: float,
+                                            feeToken: str, feeAmount: str, minGas: int,
                                             extraData=bytes(0), validUntil=None, storageId=None):
         """"""
         tokenId = self.tokenIds[token]
+        feeTokenId = self.tokenIds[feeToken]
         decimalUnit = 10**self.tokenDecimals[tokenId]
         toAddr = self.address if to == "" else to
         onchainDataHash = Web3.keccak(b''. join([int(minGas).to_bytes(32, 'big'),
@@ -706,8 +779,8 @@ class LoopringV3AmmSampleClient(RestClient):
                 "volume": str(int(amount*decimalUnit))
             },
             "maxFee" : {
-                "tokenId": tokenId,
-                "volume": str(int(amount*decimalUnit/1000))
+                "tokenId": feeTokenId,
+                "volume": feeAmount
             },
             "to": toAddr,
             "onChainDataHash": "0x" + bytes.hex(onchainDataHash),
@@ -719,15 +792,13 @@ class LoopringV3AmmSampleClient(RestClient):
 
     def on_withdraw(self, data, request):
         """"""
-        print(f"{request} get response: {data}")
+        print(f"on_withdraw get response: {data}")
 
     def send_order(self, base_token, quote_token, buy, price, volume, ammPoolAddress = None):
         order = self._create_order(base_token, quote_token, buy, price, volume, ammPoolAddress)
         # print(f"create new order {order}")
         data = {"security": Security.API_KEY}
-        headers = {
-            "Content-Type": "application/json",
-        }
+
         data.update(order)
         self.add_request(
             method="POST",
@@ -802,7 +873,7 @@ class LoopringV3AmmSampleClient(RestClient):
     def cancel_order(self, **kwargs):
         """"""
         data = {
-            "security": Security.EDDSA_SIGN
+            "security": Security.EDDSA_URL_SIGN
         }
 
         params = {
@@ -832,7 +903,7 @@ class LoopringV3AmmSampleClient(RestClient):
         req = self._create_join_pool_request(poolName, tokenAmounts, mintMinAmount, validUntil, storageIds)
         data.update(req)
 
-        message = createAmmPoolJoinMessage(req)
+        message = generateAmmPoolJoinEIP712Hash(req)
         # print(f"join message hash = {bytes.hex(message)}")
         if sigType == SignatureType.ECDSA:
             v, r, s = sig_utils.ecsign(message, self.ecdsaKey)
@@ -892,7 +963,7 @@ class LoopringV3AmmSampleClient(RestClient):
         # print(f"create new order {order}")
         data.update(req)
 
-        message = createAmmPoolExitMessage(req)
+        message = generateAmmPoolExitEIP712Hash(req)
         # print(f"join message hash = {bytes.hex(message)}")
         if sigType == SignatureType.ECDSA:
             v, r, s = sig_utils.ecsign(message, self.ecdsaKey)
@@ -945,6 +1016,6 @@ class LoopringV3AmmSampleClient(RestClient):
         print(f"PoolExit success: hash={data['hash']}")
 
 if __name__ == "__main__":
-    loopring_rest_sample = LoopringV3AmmSampleClient()
+    loopring_rest_sample = LoopringV3Client()
     srv_time = loopring_rest_sample.query_srv_time()
     print(f"srv time is {srv_time}")
