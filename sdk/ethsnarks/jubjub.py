@@ -465,7 +465,7 @@ class MontPoint(AbstractCurveOps, namedtuple('_MontPoint', ('u', 'v'))):
 		return self.as_point().as_proj()
 
 	def valid(self):
-		"""
+		r"""
 		See: https://eprint.iacr.org/2008/013.pdf
 		 - "Twisted Edwards Curves" (BBJLP'08)
 
